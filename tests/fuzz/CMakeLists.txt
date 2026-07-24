@@ -1,0 +1,26 @@
+# Optional libFuzzer targets (clang: -fsanitize=fuzzer)
+option(SLABFLUX_ENABLE_FUZZ "Build libFuzzer ingress harnesses" OFF)
+
+if(NOT SLABFLUX_ENABLE_FUZZ)
+    message(STATUS "[SLABFLUX] Fuzz targets disabled (SLABFLUX_ENABLE_FUZZ=OFF)")
+    return()
+endif()
+
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(WARNING "[SLABFLUX] Fuzz targets require Clang with -fsanitize=fuzzer")
+    return()
+endif()
+
+add_executable(http_parser_fuzz http_parser_fuzz.cpp)
+target_link_libraries(http_parser_fuzz PRIVATE slabflux)
+target_compile_definitions(http_parser_fuzz PRIVATE SLABFLUX_FUZZ_BUILD=1)
+target_compile_options(http_parser_fuzz PRIVATE -fsanitize=fuzzer-no-link)
+target_link_options(http_parser_fuzz PRIVATE -fsanitize=fuzzer)
+set_property(TARGET http_parser_fuzz PROPERTY FOLDER "Tests/Fuzz")
+
+add_executable(http_avx_fuzz http_avx_fuzz.cpp)
+target_link_libraries(http_avx_fuzz PRIVATE slabflux)
+target_compile_definitions(http_avx_fuzz PRIVATE SLABFLUX_FUZZ_BUILD=1)
+target_compile_options(http_avx_fuzz PRIVATE -fsanitize=fuzzer-no-link)
+target_link_options(http_avx_fuzz PRIVATE -fsanitize=fuzzer)
+set_property(TARGET http_avx_fuzz PROPERTY FOLDER "Tests/Fuzz")

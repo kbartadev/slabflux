@@ -1,0 +1,19 @@
+homepage: "https://github.com/kbartadev/slabflux"
+language: c++
+primary_contact: "security@slabflux.local"
+main_repo: "https://github.com/kbartadev/slabflux.git"
+file_github_issue: true
+sanitizers:
+  - address
+  - undefined
+fuzzing_engines:
+  - libfuzzer
+architectures:
+  - x86_64
+  - i386
+
+fuzz_targets:
+  - name: http_parser_fuzz
+    path: tests/fuzz/http_parser_fuzz.cpp
+  - name: http_avx_fuzz
+    path: tests/fuzz/http_avx_fuzz.cpp

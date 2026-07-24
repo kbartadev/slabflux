@@ -1,0 +1,23 @@
+google_site_verification: Tpvaa0x0xLcR36eJr_S3G17iyQzlXO-puEqn_BvxIE4
+
+theme: jekyll-theme-primer
+
+# Force Jekyll to completely ignore heavy source code, test suites, and automation scripts
+exclude:
+  - cmake/
+  - CMakeLists.txt
+  - include/
+  - scripts/
+  - tests/
+  - DISCLAIMER
+  - LICENSE
+  - NOTICE
+  - "**/CMakeLists.txt"
+
+# Ensure Jekyll specifically looks for files inside your documentation directories
+include:
+  - docs/
+  - benchmarks/INDEX.md
+  - examples/INDEX.md
+  - PORTAL.md
+  - README.md

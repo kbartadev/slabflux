@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LicenseRef-SlabFlux-Source-Available
+#
+# ============================================================================
+# SLABFLUX SOFTWARE ENGINE
+# Copyright (c) 2026 Kristóf Barta (https://github.com/kbartadev)
+# ============================================================================
+# PROPRIETARY AND SOURCE-AVAILABLE CODEBASE. ALL RIGHTS RESERVED.
+#
+# This source file and all constitutive programmatic expressions contained herein
+# are the exclusive intellectual property of Kristóf Barta, established and
+# distributed strictly under the conditions of the SLABFLUX SOURCE-AVAILABLE
+# AND ECOSYSTEM LICENSE (the "License").
+#
+# TITLE TO AND OWNERSHIP OF THE SOFTWARE, THE ENGINE, CORE LOGIC, ARCHITECTURAL
+# LAYOUTS, AND ALL ASSOCIATED INSIGHTS REMAIN SOLELY VESTED IN THE AUTHOR.
+#
+# ----------------------------------------------------------------------------
+# TECHNICAL WARNING & SYSTEM ARCHITECTURE NOTICE
+# ----------------------------------------------------------------------------
+# This software utilizes architecture-specific hardware intrinsics and bypasses
+# standard operating system protections. Incorrect integration or configuration
+# may result in critical system instability, kernel panics, or irreversible
+# physical hardware destruction.
+#
+# ----------------------------------------------------------------------------
+# ABSOLUTE USAGE RESTRICTIONS & OPERATIONAL PROHIBITIONS
+# ----------------------------------------------------------------------------
+# ANY COMMERCIAL USE, INSTITUTIONAL INCLUSION (#include), MICRO-ARCHITECTURAL
+# REPLICATION, STRUCTURAL SEQUENCE EXTRACTION, OR CORPORATE DEPLOYMENT IS
+# STRICTLY PROHIBITED AND CONSTITUTES AN IMMEDIATE, WILLFUL INFRINGEMENT
+# OF COPYRIGHT AND CONTRACTUAL BREACH.
+#
+# Execution by individual, independent developers is permitted strictly subject
+# to the conditional grants, mandatory attributions, and structural limitations
+# defined within the License.
+#
+# ----------------------------------------------------------------------------
+# ABSOLUTE THIRD-PARTY INDEMNIFICATION
+# ----------------------------------------------------------------------------
+# TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE USER AGREES TO FULLY INDEMNIFY,
+# DEFEND, AND HOLD HARMLESS THE AUTHOR FROM AND AGAINST ANY AND ALL THIRD-PARTY
+# CLAIMS, LIABILITIES, DAMAGES, AND EXPENSES (INCLUDING LEGAL FEES) ARISING
+# OUT OF OR CONCERNING INTELLECTUAL PROPERTY INFRINGEMENT, UNAUTHORIZED
+# INTEGRATION, OR OPERATIONAL DEPLOYMENT OF THE SOFTWARE.
+#
+# THE USER ASSUMES SINGULAR AND TOTAL LIABILITY FOR THE DEFENSE OF ANY THIRD-PARTY
+# INTELLECTUAL PROPERTY CLAIMS, STATUTORY VIOLATIONS, OR OPERATIONAL DAMAGES
+# DERIVED FROM THE SOFTWARE'S LOCAL OR EXTERNAL EXECUTION.
+#
+# ----------------------------------------------------------------------------
+# EXPRESS HARDWARE RISK ALLOCATION & DISCLAIMER (UCC CONSPICUOUS NOTICE)
+# ----------------------------------------------------------------------------
+# THE USER EXPRESSLY ACKNOWLEDGES AND AGREES THAT EXECUTION OF THIS SOFTWARE
+# CARRIES AN INHERENT RISK OF TOTAL PHYSICAL HARDWARE FAILURE AND PERMANENT
+# DESTRUCTION OF COMPUTING INFRASTRUCTURE. THE USER VOLUNTARILY ASSUMES ALL
+# SUCH RISKS AS A CONDITION OF EXECUTION TO THE MAXIMUM EXTENT PERMITTED BY LAW.
+#
+# IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
+# DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR
+# OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE.
+#
+# THE USER EXECUTES THIS SOFTWARE AT THEIR OWN SOLE RISK. THE AUTHOR ENTIRELY
+# DISCLAIMS ANY LIABILITY FOR SYSTEM INSTABILITY, KERNEL PANICS, LOSS OF DATA,
+# TRADING LOSSES, OR 
+# SPDX-License-Identifier: LicenseRef-SlabFlux-Source-Available
+#
+# ============================================================================
+# SLABFLUX SOFTWARE ENGINE
+# Copyright (c) 2026 Kristóf Barta (https://github.com/kbartadev)
+# ============================================================================
+# SOURCE-AVAILABLE CODEBASE
+#
+# This source file is distributed under the conditions of the SLABFLUX 
+# SOURCE-AVAILABLE AND ECOSYSTEM LICENSE (the "License").
+#
+# ----------------------------------------------------------------------------
+# CRITICAL WARNING
+# ----------------------------------------------------------------------------
+# This module may execute outside standard OS mediation layers. Incorrect 
+# integration, misconfiguration, or unsafe deployment can result in:
+#
+#   • irreversible data corruption
+#   • kernel instability or panics
+#   • NIC or PCIe bus desynchronization
+#   • undefined hardware state transitions
+#   • permanent loss of system integrity
+#
+# Use only in controlled environments with full understanding of the 
+# architectural constraints and hardware implications.
+#
+# ----------------------------------------------------------------------------
+# USAGE GUIDELINES
+# ----------------------------------------------------------------------------
+# Execution, integration, and deployment by developers is permitted strictly 
+# subject to the conditional grants and structural limitations defined within 
+# the License. Please refer to the License for full terms regarding corporate 
+# deployment and replication.
+#
+# ----------------------------------------------------------------------------
+# LIMITATION OF LIABILITY
+# ----------------------------------------------------------------------------
+# TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL THE AUTHOR OR 
+# COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, 
+# WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, 
+# OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+# ----------------------------------------------------------------------------
+# DISCLAIMER OF WARRANTY
+# ----------------------------------------------------------------------------
+# THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+#
+# See accompanying LICENSE and NOTICE files for the integrated terms of use.
+# ============================================================================.
+#
+# THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT ANY REPRESENTATIONS OR WARRANTIES
+# OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY IMPLIED
+# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR
+# NON-INFRINGEMENT OF THIRD-PARTY INTELLECTUAL PROPERTY RIGHTS.
+#
+# See accompanying LICENSE and NOTICE files for the integrated terms of use.
+# ============================================================================
+# Core Shielding (cpusets/cgroups)
+set -euo pipefail
+
+ISOLATED_CORES=$(cat /sys/devices/system/cpu/isolated)
+HOUSEKEEPING_CORES="0" # Default to Core 0
+
+[[ -z "$ISOLATED_CORES" ]] && exit 1
+
+# 1. Disable irqbalance to prevent it from undoing our pinning
+if systemctl is-active --quiet irqbalance; then
+    systemctl stop irqbalance
+fi
+
+# 2. Create CPUSet for Housekeeping
+if [[ ! -d "/sys/fs/cgroup/cpuset/system" ]]; then
+    mkdir -p /sys/fs/cgroup/cpuset/system
+    echo "$HOUSEKEEPING_CORES" > /sys/fs/cgroup/cpuset/system/cpus
+    echo "0" > /sys/fs/cgroup/cpuset/system/mems
+fi
+
+# 3. Migrate all movable tasks to Housekeeping
+log_info "Migrating system tasks to Core $HOUSEKEEPING_CORES..."
+for pid in $(ps -eLo pid | sort -u); do
+    echo "$pid" > /sys/fs/cgroup/cpuset/system/tasks 2>/dev/null || true
+done
+
+# 4. Disable Transparent HugePages (SlabFlux manages its own)
+echo never > /sys/kernel/mm/transparent_hugepage/enabled
+echo never > /sys/kernel/mm/transparent_hugepage/defrag
+
+# 5. Disable NMI Watchdog
+echo 0 > /proc/sys/kernel/nmi_watchdog
+
+exit 0

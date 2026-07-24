@@ -1,0 +1,13 @@
+build/
+*.o
+*.obj
+*.exe
+*.out
+.cache*
+_deps*
+.zed
+*.cmake
+*.make
+CMakeFiles
+*.ts
+compile_commands.json

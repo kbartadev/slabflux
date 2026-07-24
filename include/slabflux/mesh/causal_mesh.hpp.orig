@@ -1,0 +1,218 @@
+/*
+ * SPDX-License-Identifier: LicenseRef-SlabFlux-Source-Available
+ *
+ * ============================================================================
+ * SLABFLUX SOFTWARE ENGINE
+ * Copyright (c) 2026 Kristóf Barta (https://github.com/kbartadev)
+ * ============================================================================
+ * SOURCE-AVAILABLE CODEBASE
+ *
+ * This source file is distributed under the conditions of the SLABFLUX 
+ * SOURCE-AVAILABLE AND ECOSYSTEM LICENSE (the "License").
+ *
+ * ----------------------------------------------------------------------------
+ * CRITICAL WARNING
+ * ----------------------------------------------------------------------------
+ * This module may execute outside standard OS mediation layers. Incorrect 
+ * integration, misconfiguration, or unsafe deployment can result in:
+ *
+ *   • irreversible data corruption
+ *   • kernel instability or panics
+ *   • NIC or PCIe bus desynchronization
+ *   • undefined hardware state transitions
+ *   • permanent loss of system integrity
+ *
+ * Use only in controlled environments with full understanding of the 
+ * architectural constraints and hardware implications.
+ *
+ * ----------------------------------------------------------------------------
+ * USAGE GUIDELINES
+ * ----------------------------------------------------------------------------
+ * Execution, integration, and deployment by developers is permitted strictly 
+ * subject to the conditional grants and structural limitations defined within 
+ * the License. Please refer to the License for full terms regarding corporate 
+ * deployment and replication.
+ *
+ * ----------------------------------------------------------------------------
+ * LIMITATION OF LIABILITY
+ * ----------------------------------------------------------------------------
+ * TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL THE AUTHOR OR 
+ * COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, 
+ * WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, 
+ * OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * ----------------------------------------------------------------------------
+ * DISCLAIMER OF WARRANTY
+ * ----------------------------------------------------------------------------
+ * THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ *
+ * See accompanying LICENSE and NOTICE files for the integrated terms of use.
+ * ============================================================================*
+ * @file causal_mesh.hpp
+ * @brief O(1) Causal Consistency Replicator.
+ * @details Deterministic event ordering across a distributed
+ * cluster using hardware-aligned Vector Clocks and a zero-allocation 
+ * Out-of-Order (OoO) Parking Lot.
+ */
+
+#pragma once
+
+#include <cstdint>
+#include <atomic>
+#include <array>
+#include <system_error>
+
+#include "slabflux/core/pinned_allocator_spsc.hpp"
+
+namespace slabflux::mesh {
+
+    /**
+     * @brief The topological size of the cluster. 
+     * @details Fixed at compile time to achieve zero dynamic allocations.
+     */
+    constexpr size_t MAX_CLUSTER_NODES = 8;
+
+    /**
+     * @brief The causal state of a node. 
+     * @details Contains the highest exact sequence number seen from every node.
+     */
+    struct alignas(64) causal_vector {
+        uint64_t sequences[MAX_CLUSTER_NODES]{0};
+
+        inline bool operator==(const causal_vector& other) const noexcept {
+            for (size_t i = 0; i < MAX_CLUSTER_NODES; ++i) {
+                if (sequences[i] != other.sequences[i]) return false;
+            }
+            return true;
+        }
+    };
+
+    /**
+     * @brief The absolute zero-copy wire format.
+     * @details Sent directly over the NIC via DMA. No serialization required.
+     */
+    template<typename T>
+    struct alignas(64) wire_frame {
+        uint16_t origin_node_id;
+        uint64_t sequence_id;         // The absolute ID from the origin
+        causal_vector causal_state;   // What the origin knew when it sent this
+        T payload;                    // The actual domain data
+    };
+
+    /**
+     * @brief The Ingress Sequencer and Out-of-Order Parking Lot.
+     * @details intercepts incoming raw frames. If they satisfy causality, they are 
+     * immediately passed to the pipeline. If not, they are parked in an O(1) ring buffer.
+     */
+    template<typename T, size_t ParkingCapacity, typename PipelineLogic>
+    class alignas(64) causal_ingress_router {
+        static_assert((ParkingCapacity & (ParkingCapacity - 1)) == 0, "ParkingCapacity must be a power of 2");
+        static constexpr size_t MASK = ParkingCapacity - 1;
+
+        // The absolute state of truth for THIS node
+        causal_vector local_truth_;
+        const uint16_t local_node_id_;
+
+        // The Pipeline to push causally-cleared frames into
+        PipelineLogic& compute_pipeline_;
+
+        // ------------------------------------------------------------------------
+        // The O(1) Zero-Allocation Parking Lot
+        // ------------------------------------------------------------------------
+        // We use an array of pointers. If a frame arrives out of order, we slot it 
+        // by its sequence_id into the ring.
+        wire_frame<T>* parked_frames_[MAX_CLUSTER_NODES][ParkingCapacity]{nullptr};
+
+    public:
+        causal_ingress_router(uint16_t node_id, PipelineLogic& logic)
+            : local_node_id_(node_id), compute_pipeline_(logic) {}
+
+        /**
+         * @brief Evaluates an incoming frame from the Nexus Node.
+         * @param frame Pointer to the pristine DMA memory containing the frame.
+         */
+        inline void on_raw_frame(wire_frame<T>* frame) noexcept {
+            uint16_t origin = frame->origin_node_id;
+            uint64_t seq = frame->sequence_id;
+
+            // The Fast Path: Is this exactly the next frame we expect from the origin?
+            uint64_t expected_seq = local_truth_.sequences[origin] + 1;
+
+            if (seq == expected_seq) [[likely]] {
+                // Causality check: Ensure we have seen everything the sender saw
+                if (is_causally_ready(frame->causal_state)) [[likely]] {
+                    
+                    // 1. Process the current frame
+                    accept_frame(frame, origin, seq);
+
+                    // 2. Chain-reaction: Check if this unblocks any parked frames
+                    drain_parking_lot(origin);
+                    return;
+                }
+            }
+
+            // The Slow Path: Frame is out of order (arrived too early) or causal gap.
+            if (seq > expected_seq) [[unlikely]] {
+                // CRITICAL FIX: Prevent Ring-Buffer Aliasing
+                if (__builtin_expect(seq - expected_seq >= ParkingCapacity, 0)) [[unlikely]] {
+                    // CATASTROPHIC GAP: The parking lot is physically too small to absorb this packet loss.
+                    // Action: Drop the packet, trigger telemetry, and initiate an out-of-band state synchronization.
+                    return;
+                }
+
+                parked_frames_[origin][seq & MASK] = frame;
+            }
+        }
+
+    private:
+        /**
+         * @brief Checks if our local truth contains all events the sender knew about.
+         */
+        [[nodiscard]] inline bool is_causally_ready(const causal_vector& sender_state) const noexcept {
+            for (size_t i = 0; i < MAX_CLUSTER_NODES; ++i) {
+                if (i != local_node_id_ && sender_state.sequences[i] > local_truth_.sequences[i]) {
+                    return false; // We are missing events the sender already processed
+                }
+            }
+            return true;
+        }
+
+        /**
+         * @brief Accepts a frame, updates local truth, and pushes to Compute.
+         */
+        inline void accept_frame(wire_frame<T>* frame, uint16_t origin, uint64_t seq) noexcept {
+            // Advance our local clock for this origin
+            local_truth_.sequences[origin] = seq;
+            
+            // Push the pristine payload directly to the deterministic state machine
+            compute_pipeline_.dispatch(&frame->payload);
+        }
+
+        /**
+         * @brief Checks the parking lot to see if the newly accepted frame unblocked others.
+         */
+        inline void drain_parking_lot(uint16_t origin) noexcept {
+            while (true) {
+                uint64_t next_expected = local_truth_.sequences[origin] + 1;
+                uint32_t slot = next_expected & MASK;
+
+                wire_frame<T>* parked = parked_frames_[origin][slot];
+
+                // If there is a frame, AND it's the exact one we need (handling ring collisions)
+                if (parked && parked->sequence_id == next_expected) {
+                    
+                    // Even if it's the right sequence, we must re-verify global causality
+                    if (is_causally_ready(parked->causal_state)) {
+                        parked_frames_[origin][slot] = nullptr; // Remove from parking lot
+                        accept_frame(parked, origin, next_expected);
+                        continue; // Loop again: we might unblock a cascade of 100 frames
+                    }
+                }
+                break; // Parking lot blocked or empty
+            }
+        }
+    };
+
+} // namespace slabflux::mesh

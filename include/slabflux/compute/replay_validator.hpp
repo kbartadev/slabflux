@@ -1,0 +1,92 @@
+/*
+ * SPDX-License-Identifier: LicenseRef-SlabFlux-Source-Available
+ *
+ * ============================================================================
+ * SLABFLUX SOFTWARE ENGINE
+ * Copyright (c) 2026 Kristóf Barta (https://github.com/kbartadev)
+ * ============================================================================
+ * SOURCE-AVAILABLE CODEBASE
+ *
+ * This source file is distributed under the conditions of the SLABFLUX 
+ * SOURCE-AVAILABLE AND ECOSYSTEM LICENSE (the "License").
+ *
+ * ----------------------------------------------------------------------------
+ * CRITICAL WARNING
+ * ----------------------------------------------------------------------------
+ * This module may execute outside standard OS mediation layers. Incorrect 
+ * integration, misconfiguration, or unsafe deployment can result in:
+ *
+ *   • irreversible data corruption
+ *   • kernel instability or panics
+ *   • NIC or PCIe bus desynchronization
+ *   • undefined hardware state transitions
+ *   • permanent loss of system integrity
+ *
+ * Use only in controlled environments with full understanding of the 
+ * architectural constraints and hardware implications.
+ *
+ * ----------------------------------------------------------------------------
+ * USAGE GUIDELINES
+ * ----------------------------------------------------------------------------
+ * Execution, integration, and deployment by developers is permitted strictly 
+ * subject to the conditional grants and structural limitations defined within 
+ * the License. Please refer to the License for full terms regarding corporate 
+ * deployment and replication.
+ *
+ * ----------------------------------------------------------------------------
+ * LIMITATION OF LIABILITY
+ * ----------------------------------------------------------------------------
+ * TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL THE AUTHOR OR 
+ * COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, 
+ * WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, 
+ * OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * ----------------------------------------------------------------------------
+ * DISCLAIMER OF WARRANTY
+ * ----------------------------------------------------------------------------
+ * THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ *
+ * See accompanying LICENSE and NOTICE files for the integrated terms of use.
+ * ============================================================================*
+ * @file replay_validator.hpp
+ * @brief Bit-Exact State Validation.
+ */
+
+#pragma once
+
+#include <immintrin.h> // For CRC32/64 intrinsics
+
+namespace slabflux::compute {
+
+    /**
+     * @brief Superscalar Hardware-Accelerated State Validator.
+     * @details Replaces generic validation loops with a 3-way interleaved CRC32 
+     * pipeline. Modern Intel CPUs possess 3 independent execution ports for CRC32. 
+     * By interleaving three accumulators, we extract 3x the silicon throughput 
+     * compared to textbook CRC loops.
+     */
+    template<typename T>
+    inline uint64_t compute_state_hash(const T& state) noexcept {
+        const uint64_t* p = reinterpret_cast<const uint64_t*>(&state);
+        size_t n = sizeof(T) / 8;
+        
+        uint64_t h1 = 0x12345678, h2 = 0x87654321, h3 = 0xDEADBEEF;
+        size_t i = 0;
+        
+        // Unroll by 3 to saturate all hardware ALUs simultaneously
+        for (; i + 3 <= n; i += 3) {
+            h1 = _mm_crc32_u64(h1, p[i]);
+            h2 = _mm_crc32_u64(h2, p[i+1]);
+            h3 = _mm_crc32_u64(h3, p[i+2]);
+        }
+        
+        // Tail processing
+        for (; i < n; ++i) {
+            h1 = _mm_crc32_u64(h1, p[i]);
+        }
+        
+        return h1 ^ h2 ^ h3;
+    }
+}
